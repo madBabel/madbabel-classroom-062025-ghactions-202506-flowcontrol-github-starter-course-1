@@ -162,7 +162,7 @@ jobs:
       - name: Autograding summary
         uses: classroom-resources/autograding-grading-reporter@v1
         with:
-          runners: test,test2,test3
+          runners: test1,test2,test3
         env:
           TEST1_RESULTS: "${{ steps.test1.outputs.result }}"
           TEST2_RESULTS: "${{ steps.test2.outputs.result }}"
