@@ -1,163 +1,169 @@
-name: Autograding Tests
-on:
-  repository_dispatch:
+name: Autograding Tests – Execution Flow
+on:  
   workflow_dispatch:
+  repository_dispatch:
+
 permissions:
   checks: write
   actions: read
   contents: read
 
-
 jobs:
-  get-workflow-id:
-    outputs:
-      run_id: ${{steps.get_workflow.outputs.run_id}}
+  # ─────────────────────────────────────────────────────────────
+  # 1) Validación estática del workflow
+  # ─────────────────────────────────────────────────────────────
+  static-wf-check:
+    if: github.actor != 'github-classroom[bot]'
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
 
-    steps:          
-      - name: Get workFlow Run
-        id: get_workflow
-        uses: madBabel/get-run-id-of-wf-action@v2
-        with:
-            workflow-file: '03-workflow-runners.yaml'    
-            status: 'success'
+      - name: Check if execution-flow.yml exists
+        run: |
+          test -f .github/workflows/execution-flow.yml \
+            || { echo "❌ Falta .github/workflows/execution-flow.yml" ; exit 1 ; }
+          echo "✅ El workflow existe."
 
-  checkJobs:   
-    needs: get-workflow-id
-    runs-on: ubuntu-latest    
-    outputs: 
-      ubuntuExecuted: ${{steps.check_Steps_for_ubuntu_echo.outputs.stepsExecuted}}
-      windowsExecuted: ${{steps.check_Steps_for_windows_echo.outputs.stepsExecuted}}
-      macExecuted: ${{steps.check_Steps_for_mac_echo.outputs.stepsExecuted}}
-    steps:     
+      - name: Check workflow triggers & input
+        run: |
+          wf='.github/workflows/execution-flow.yml'
+          grep -q "workflow_dispatch"    "$wf" || { echo "❌ Falta trigger workflow_dispatch" ; exit 1 ; }
+          grep -q "pass-unit-tests"      "$wf" || { echo "❌ Falta input pass-unit-tests" ; exit 1 ; }
+          grep -q "type: boolean"        "$wf" || { echo "❌ El input no es booleano" ; exit 1 ; }
+          grep -q "default: false"       "$wf" || { echo "❌ El valor por defecto del input debe ser false" ; exit 1 ; }
+          echo "✅ Triggers e input correctos."
 
-      - name: Check step executed for ubuntu-echo
-        id: check_Steps_for_ubuntu_echo
-        uses: madBabel/check-jobs-steps-gha-action@v3
-        with:
-          run-id: ${{needs.get-workflow-id.outputs.run_id}}
-          job-to-execute: ubuntu-echo      
-        
-      - name: Check step executed for windows-echo
-        id: check_Steps_for_windows_echo
-        uses: madBabel/check-jobs-steps-gha-action@v3
-        with:
-          run-id: ${{needs.get-workflow-id.outputs.run_id}}
-          job-to-execute: windows-echo    
+      - name: Check jobs are defined
+        run: |
+          wf='.github/workflows/execution-flow.yml'
+          for job in lint-build unit-tests deploy-nonprod e2e-tests load-tests deploy-prod ; do
+            grep -q "$job:" "$wf" || { echo "❌ Falta el job $job" ; exit 1 ; }
+          done
+          echo "✅ Todos los jobs existen."
 
-      - name: Check step executed for mac-echo
-        id: check_Steps_for_mac_echo
-        uses: madBabel/check-jobs-steps-gha-action@v3
-        with:
-          run-id: ${{needs.get-workflow-id.outputs.run_id}}
-          job-to-execute: mac-echo      
-          
+      - name: Check key steps exist
+        run: |
+          wf='.github/workflows/execution-flow.yml'
+          for step in \
+             "Lint and build" \
+             "Running unit tests" \
+             "Failing tests" \
+             "Deploying to nonprod" \
+             "Running E2E tests" \
+             "Running load tests" \
+             "Deploying to prod"
+          do
+            grep -q "$step" "$wf" || { echo "❌ Falta el step \"$step\"" ; exit 1 ; }
+          done
+          echo "✅ Todos los steps requeridos existen."
 
-  autograding-reporter:    
-      needs: [checkJobs,get-workflow-id]
-      runs-on: ubuntu-latest    
-      steps:           
-      - name: Run Autograding Step Tests for ub-echo
-        uses: classroom-resources/autograding-io-grader@v1      
-        id: test1
-        with:
-            test-name: 'Test Step executed'   
-            command: 'echo ${{needs.checkJobs.outputs.ubuntuExecuted}}'
-            input: ''
-            expected-output: 'true'
-            comparison-method: 'exact'  
-            max-score: 12
-      - name: Run Autograding Step Tests for win-echo
-        uses: classroom-resources/autograding-io-grader@v1      
-        id: test2
-        with:
-            test-name: 'Test Step executed'   
-            command: 'echo ${{needs.checkJobs.outputs.windowsExecuted}}'
-            input: ''
-            expected-output: 'true'
-            comparison-method: 'exact'  
-            max-score: 12 
-      - name: Run Autograding Step Tests for mac-echo
-        uses: classroom-resources/autograding-io-grader@v1      
-        id: test3
-        with:
-            test-name: 'Test Step executed'   
-            command: 'echo ${{needs.checkJobs.outputs.macExecuted}}'
-            input: ''
-            expected-output: 'true'
-            comparison-method: 'exact'  
-            max-score: 16 
+      - name: Ensure continue-on-error not present
+        run: |
+          if grep -q "continue-on-error:" .github/workflows/execution-flow.yml ; then
+            echo "❌ No debe existir 'continue-on-error' en la versión final."
+            exit 1
+          fi
+          echo "✅ Sin continue-on-error (versión final)."
 
-      - name: Get logs of the latest workflow run
-        id: get_logs
+  # ─────────────────────────────────────────────────────────────
+  # 2) Hay al menos una ejecución MANUAL con éxito
+  # ─────────────────────────────────────────────────────────────
+  manual-success-check:
+    if: github.actor != 'github-classroom[bot]'
+    outputs:
+      executed: ${{ steps.getwf.outputs.executed }}
+    runs-on: ubuntu-latest
+    steps:
+      - id: getwf
         uses: actions/github-script@v6
         with:
           script: |
-            const run_id = ${{needs.get-workflow-id.outputs.run_id}}
-            const logs = await github.rest.actions.downloadWorkflowRunLogs({
+            const runs = await github.rest.actions.listWorkflowRuns({
               owner: context.repo.owner,
-              repo: context.repo.repo,
-              run_id
+              repo:  context.repo.repo,
+              workflow_id: 'execution-flow.yml',
+              per_page: 1,
+              status: 'success',
+              event:  'workflow_dispatch'
             });
-        
-            const zipUrl = logs.url; 
+            const ok = runs.data.total_count > 0;
+            core.setOutput('executed', ok);
+            console.log('Success run found? =>', ok);
+          result-encoding: string
 
-            if (!zipUrl) {
-              core.setFailed('ZIP URL not found in logs.');
-            }
-            
-            core.setOutput('zip_url', zipUrl); // Envía la URL como salida para usar en el siguiente paso
-
-      - name: Download and unzip the file
-        if: steps.get_logs.outputs.zip_url != ''
-        run: |      
-          curl -L "${{ steps.get_logs.outputs.zip_url }}" -o downloaded_file.zip        
-          mkdir -p unzipped_files
-          unzip downloaded_file.zip -d unzipped_files
-          ls unzipped_files
-
-      - name: Run Autograding Tests for console unbuntu
-        uses: classroom-resources/autograding-io-grader@v1      
-        id: test4
+  # ─────────────────────────────────────────────────────────────
+  # 3) Hay al menos una ejecución MANUAL que haya fallado
+  #    (unit-tests con pass-unit-tests: false)
+  # ─────────────────────────────────────────────────────────────
+  manual-failure-check:
+    if: github.actor != 'github-classroom[bot]'
+    outputs:
+      executed: ${{ steps.getwf.outputs.executed }}
+    runs-on: ubuntu-latest
+    steps:
+      - id: getwf
+        uses: actions/github-script@v6
         with:
-            test-name: 'Test ubuntu in logs'   
-            command: 'tail -n3 unzipped_files/ubuntu*/*Mostrar*SO*.txt'
-            input: 'OK'
-            expected-output: '.*Runner de Ubuntu.+[\n]*.*Linux.*'
-            comparison-method: 'regex'
-            max-score: 20     
+          script: |
+            const runs = await github.rest.actions.listWorkflowRuns({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              workflow_id: 'execution-flow.yml',
+              per_page: 1,
+              status: 'failure',
+              event:  'workflow_dispatch'
+            });
+            const ko = runs.data.total_count > 0;
+            core.setOutput('executed', ko);
+            console.log('Failure run found? =>', ko);
+          result-encoding: string
 
-      - name: Run Autograding Tests for console windows
-        uses: classroom-resources/autograding-io-grader@v1      
-        id: test5
+  # ─────────────────────────────────────────────────────────────
+  # 4) Reporte de calificaciones
+  # ─────────────────────────────────────────────────────────────
+  autograding-reporter:
+    needs: [static-wf-check, manual-success-check, manual-failure-check]
+    if: ${{ always() && github.actor != 'github-classroom[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Static workflow validations
+        uses: classroom-resources/autograding-io-grader@v1
+        id: t1
         with:
-            test-name: 'Test windows in logs'   
-            command: 'tail -n3 unzipped_files/windows*/*Mostrar*SO.txt'
-            input: 'OK'
-            expected-output: '.*Runner de Windows.+[\n]*.*Windows.*'
-            comparison-method: 'regex'
-            max-score: 20   
-        
+          test-name: 'Workflow definido correctamente'
+          command: 'echo ${{needs.static-wf-check.result}}'
+          input: ''
+          expected-output: 'success'
+          comparison-method: 'exact'
+          max-score: 40
 
-      - name: Run Autograding Tests for console mac
-        uses: classroom-resources/autograding-io-grader@v1      
-        id: test6
+      - name: Manual run SUCCESS exists
+        uses: classroom-resources/autograding-io-grader@v1
+        id: t2
         with:
-            test-name: 'Test mac in logs'   
-            command: 'tail -n3 unzipped_files/mac*/*Mostrar*SO*.txt'
-            input: 'OK'
-            expected-output: '.*Runner de MacOS.+[\n]*.*macOS.*'
-            comparison-method: 'regex'
-            max-score: 20  
-            
-      - name: Autograding Reporter
-        uses: classroom-resources/autograding-grading-reporter@v1     
+          test-name: 'Ejecución manual exitosa'
+          command: 'echo ${{needs.manual-success-check.outputs.executed}}'
+          input: ''
+          expected-output: 'true'
+          comparison-method: 'exact'
+          max-score: 30
+
+      - name: Manual run FAILURE exists
+        uses: classroom-resources/autograding-io-grader@v1
+        id: t3
         with:
-           runners: test1,test2,test3,test4,test5,test6
+          test-name: 'Ejecución manual fallida'
+          command: 'echo ${{needs.manual-failure-check.outputs.executed}}'
+          input: ''
+          expected-output: 'true'
+          comparison-method: 'exact'
+          max-score: 30
+
+      - name: Autograding summary
+        uses: classroom-resources/autograding-grading-reporter@v1
+        with:
+          runners: t1,t2,t3
         env:
-          TEST1_RESULTS: "${{ steps.test1.outputs.result }}"
-          TEST2_RESULTS: "${{ steps.test2.outputs.result }}"   
-          TEST3_RESULTS: "${{ steps.test3.outputs.result }}"   
-          TEST4_RESULTS: "${{ steps.test4.outputs.result }}"   
-          TEST5_RESULTS: "${{ steps.test5.outputs.result }}"   
-          TEST6_RESULTS: "${{ steps.test6.outputs.result }}"     
+          TEST1_RESULTS: "${{ steps.t1.outputs.result }}"
+          TEST2_RESULTS: "${{ steps.t2.outputs.result }}"
+          TEST3_RESULTS: "${{ steps.t3.outputs.result }}"
